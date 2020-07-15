@@ -214,7 +214,7 @@ def get(arg):
         return objs
     except Exception as exc:
         tb_lineno = sys.exc_info()[2].tb_lineno
-        print(exc, url, soup.title, soup, tb_lineno)
+        print(exc, url, soup.title, tb_lineno)
 
 
 if __name__ == "__main__":
