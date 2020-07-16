@@ -13,7 +13,9 @@ import sys
 import pandas as pd
 from tqdm import tqdm
 from collections import namedtuple
-
+import numpy as np
+import json
+import SanrentanParser
 
 def sanitize(x):
     x = re.sub("\s{1,}", "", x)
@@ -38,10 +40,12 @@ def get_digest(url):
 
 @dataclass
 class Record:
+    uniq_key: str = ""
     rank: str = ""
     race_time: str = ""
     tansho_odds: str = ""
     fukusho_odds: str = ""
+    sanrentan_odds: dict = None
     cup_name: str = ""
     kaijo_name: str = ""
     waku_name: str = ""
@@ -74,7 +78,11 @@ def get(arg):
     URLが racelist?のものを許可
     url = "https://www.boatrace.jp/owpc/pc/race/racelist?rno=12&jcd=05&hd=20200528"
     """
+    uniq_key = url.split("?")[-1]
     try:
+        if Path(f"var/work_cache/{digest}").exists():
+            return None
+
         with gzip.open(f"var/htmls/{digest}", "rt") as fp:
             html = fp.read()
         soup = BeautifulSoup(html, "lxml")
@@ -91,6 +99,7 @@ def get(arg):
         """ レーサー毎のレコード """
         for record in soup.find_all("tbody", attrs={"class": "is-fs12"}):
             obj = Record()
+            obj.uniq_key = uniq_key
             obj.cup_name = cup_name
             obj.kaijo_name = kaijo_name
             waku_name = record.find(attrs={"class": "is-fs14"}).text
@@ -190,7 +199,6 @@ def get(arg):
 
         soup = BeautifulSoup(html)
         odds_table = soup.find_all(attrs={"class": "is-w495"})[0]
-        
 
         TanshoOdds = namedtuple("TanshoOdds", ["waku_name", "name", "odds"])
         tansho_oddses = [TanshoOdds(*[td.text for td in tr.find_all("td")]) for tr in odds_table.find_all("tr") if len(tr.find_all("td")) == 3]
@@ -198,7 +206,6 @@ def get(arg):
             for obj in objs:
                 if obj.waku_name == tansho_odds.waku_name:
                     obj.tansho_odds = tansho_odds.odds
-        
 
         odds_table = soup.find_all(attrs={"class": "is-w495"})[1]
         FukushoOdds = namedtuple("FukushoOdds", ["waku_name", "name", "odds"])
@@ -208,28 +215,77 @@ def get(arg):
                 if obj.waku_name == fukusho_odds.waku_name:
                     obj.fukusho_odds = fukusho_odds.odds
 
+        odds_url = f"https://www.boatrace.jp/owpc/pc/race/odds3t?{suffix_param}"
+        if Path(f"var/htmls/{get_digest(odds_url)}").exists():
+            with gzip.open(f"var/htmls/{get_digest(odds_url)}", "rt") as fp:
+                html = fp.read()
+        else:
+            with requests.get(result_url) as r:
+                html = r.text
+            with gzip.open(f"var/htmls/{get_digest(odds_url)}", "wt") as fp:
+                fp.write(html)
+        dd = SanrentanParser.get_dd(html)
+        for waku_name, sanrentan_odds in dd.items():
+            for obj in objs:
+                if obj.waku_name == waku_name:
+                    obj.sanrentan_odds = sanrentan_odds
+
         # print(ret)
         # for obj in objs:
         #    print(asdict(obj))
-        return objs
+        with open(f"var/work_cache/{digest}", "w") as fp:
+            json.dump([asdict(x) for x in objs], fp, indent=2, ensure_ascii=False)
+        # return objs
     except Exception as exc:
         tb_lineno = sys.exc_info()[2].tb_lineno
         print(exc, url, soup.title, tb_lineno)
 
 
-if __name__ == "__main__":
-    digest_url = []
+def get_wrap(chunk):
     objs = []
-    for url_def_file in tqdm(glob.glob("var/urls/*")):
-        digest = Path(url_def_file).name
-        url = gzip.open(url_def_file, "rt").read()
-        if re.search("https://www.boatrace.jp/owpc/pc/race/racelist?", url) is None:
+    for arg in chunk:
+        ret = get(arg)
+        if ret is None:
             continue
-        digest_url.append((digest, url))
+        objs.append(ret)
+    return objs
 
+def _load_digest_url_files(url_def_file):
+    digest = Path(url_def_file).name
+    url = gzip.open(url_def_file, "rt").read()
+    if re.search("https://www.boatrace.jp/owpc/pc/race/racelist?", url) is None:
+        return None
+    return (digest, url)
+
+
+def load_digest_url_files():
+
+    url_def_files = glob.glob("var/urls/*")
+    digest_urls = []
     with ProcessPoolExecutor(max_workers=16) as exe:
-        for ret in tqdm(exe.map(get, digest_url), total=len(digest_url), desc="working..."):
-            if ret is not None:
+        for ret in tqdm(exe.map(_load_digest_url_files, url_def_files), total=len(url_def_files), desc="load_digest_url_files..."):
+            if ret is None:
+                continue
+            digest_urls.append(ret)
+    
+    x = np.array(digest_urls)
+    np.random.shuffle(x)
+    N = 100
+    x = x[:N*(len(x)//N)]
+    x = x.reshape((len(x)//N, N, 2))
+    return x
+
+
+if __name__ == "__main__":
+
+    chunks = load_digest_url_files()
+    with ProcessPoolExecutor(max_workers=16) as exe:
+        for _ in tqdm(exe.map(get_wrap, chunks.tolist()), total=len(chunks), desc="working..."):
+            _
+    """
+    objs = []
+            for ret in rets:
                 objs += [asdict(r) for r in ret]
 
-    pd.DataFrame(objs).to_csv("var/collect_data.csv", index=None)
+    pd.DataFrame(objs).to_csv("var/collect_data.csv.back", index=None)
+    """

@@ -46,12 +46,28 @@ def get_urls_from_html(html):
     return urls
 
 
+def _get_urls_from_local_html(filename):
+    with gzip.open(filename, "rt") as fp:
+        html = fp.read()
+    return get_urls_from_html(html)
+
+
+def get_urls_from_local_html():
+    filenames = glob.glob("var/htmls/*")
+    filenames = [filename for filename in random.sample(filenames, 10000)]
+    urls = set()
+    with ProcessPoolExecutor(max_workers=16) as exe:
+        for _urls in tqdm(exe.map(_get_urls_from_local_html, filenames), total=len(filenames)):
+            urls |= _urls
+    return urls
+
+
 def get(url):
     try:
         digest = get_digest(url)
         if Path(f"var/htmls/{digest}").exists():
             return set()
-
+        print(f"start to {url}, {digest}")
         with requests.get(url) as r:
             html = r.text
         save_with_digest(url, html)
@@ -62,8 +78,6 @@ def get(url):
         return set()
 
 
-def run(urls):
-    asyncio.run(get(urls))
 
 
 if __name__ == "__main__":
@@ -71,10 +85,7 @@ if __name__ == "__main__":
     if filenames == []:
         urls = get(seed)
     else:
-        urls = set()
-        for filename in tqdm(random.sample(filenames, 10000)):
-            with gzip.open(filename, "rt") as fp:
-                urls |= get_urls_from_html(fp.read())
+        urls = get_urls_from_local_html()
 
     for i in range(10):
         with ProcessPoolExecutor(max_workers=100) as exe:
@@ -82,3 +93,4 @@ if __name__ == "__main__":
             for _next_urls in exe.map(get, urls):
                 next_urls |= _next_urls
             urls = next_urls
+
